@@ -5,20 +5,29 @@ on:
   pull_request:
   push:
     tags: ["*"]
-    branches: ["develop"]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  MISE_EXPERIMENTAL: true
+permissions:
+  contents: read
 
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - run: mise run ci
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          # FlakeHub Cache needs an org account we don't have; left on
+          # "opportunistic" it errors on every job and buries real failures.
+          use-flakehub: false
+          use-gha-cache: true
+
+      - run: nix develop -c make ci
