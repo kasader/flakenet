@@ -46,6 +46,17 @@ as head-of-line blocking rather than reordered or interleaved bytes.
 `PacketConn` is datagram-oriented. Packets reorder naturally, and a later
 datagram can overtake an earlier one under sufficient jitter.
 
+## Development
+
+Tooling comes from the Nix flake. `direnv allow` (or `nix develop`) gets you a
+shell with the pinned Go toolchain, `golangci-lint`, and `govulncheck`.
+
+```sh
+make        # list targets
+make init   # install the pre-commit hook
+make ci     # fmt-check, lint, test
+```
+
 ## Relation to `lossy`
 
 Builds on [cevatbarisyilmaz/lossy][1] with two changes: queued delivery instead

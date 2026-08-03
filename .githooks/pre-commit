@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STAGED_GO_FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+
+if [ -n "$STAGED_GO_FILES" ]; then
+  echo "pre-commit: formatting staged Go files"
+  golangci-lint fmt ./...
+  # re-add only what was already staged, so unrelated formatting fixes stay unstaged
+  git add -- $STAGED_GO_FILES
+
+  echo "pre-commit: go vet ./..."
+  go vet ./...
+
+  echo "pre-commit: golangci-lint (new issues only)"
+  golangci-lint run --new-from-rev=HEAD --whole-files
+fi
