@@ -10,7 +10,7 @@ init: ## Set up git pre-commit hook.
 	git config core.hooksPath .githooks
 
 .PHONY: ci
-ci: fmt-check lint test ## Runs everything CI runs.
+ci: fmt-check lint test vuln ## Runs the checks CI runs.
 
 .PHONY: fmt
 fmt: ## Runs code formatting.
@@ -31,6 +31,11 @@ lint-fast: ## Runs golangci-lint on issues introduced since the previous commit.
 .PHONY: test
 test: ## Build and run all tests.
 	go test -v -race ./...
+
+.PHONY: cover
+cover: ## Reports total test coverage.
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
 
 .PHONY: vuln
 vuln: ## Scans for known vulnerabilities via govulncheck.

@@ -21,25 +21,34 @@
       flake-utils,
       nixpkgs-go,
     }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-        pkgs-go = nixpkgs-go.legacyPackages.${system};
-      in
-      {
-        # Activated with 'nix develop', or automatically via direnv.
-        devShells.default = pkgs.mkShell {
-          buildInputs = [
-            pkgs-go.go_1_25
-            pkgs-go.golangci-lint
-            pkgs-go.govulncheck
-            pkgs-go.delve
-            pkgs-go.gopls
+    # Not eachDefaultSystem: that includes x86_64-darwin, which nixpkgs 26.11
+    # dropped, so `nix flake check --all-systems` fails on a system we never
+    # supported anyway.
+    flake-utils.lib.eachSystem
+      [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ]
+      (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs-go = nixpkgs-go.legacyPackages.${system};
+        in
+        {
+          # Activated with 'nix develop', or automatically via direnv.
+          devShells.default = pkgs.mkShell {
+            buildInputs = [
+              pkgs-go.go_1_25
+              pkgs-go.golangci-lint
+              pkgs-go.govulncheck
+              pkgs-go.delve
+              pkgs-go.gopls
 
-            pkgs.git
-          ];
-        };
-      }
-    );
+              pkgs.git
+            ];
+          };
+        }
+      );
 }

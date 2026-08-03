@@ -54,7 +54,7 @@ shell with the pinned Go toolchain, `golangci-lint`, and `govulncheck`.
 ```sh
 make        # list targets
 make init   # install the pre-commit hook
-make ci     # fmt-check, lint, test
+make ci     # fmt-check, lint, test, vuln
 ```
 
 ## Relation to `lossy`
