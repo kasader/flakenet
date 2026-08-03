@@ -1,4 +1,4 @@
-package netem_test
+package flakenet_test
 
 import (
 	"io"
@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kasader/netem"
-	"github.com/kasader/netem/policy"
+	flakenet "github.com/kasader/flakenet"
+	"github.com/kasader/flakenet/policy"
 )
 
 // TestConn_Latency verifies that data is actually delayed by the specified duration.
@@ -19,7 +19,7 @@ func TestConn_Latency(t *testing.T) {
 
 	// 2. Wrap the client with 100ms latency
 	latency := 100 * time.Millisecond
-	emulatedClient := netem.NewConn(client, netem.StreamProfile{
+	emulatedClient := flakenet.NewConn(client, flakenet.StreamProfile{
 		Latency: policy.StaticLatency(latency),
 	})
 
@@ -61,7 +61,7 @@ func TestConn_Ordering(t *testing.T) {
 	// Use a LARGE jitter (±50ms) on a 100ms base.
 	// This ensures that sometimes Packet B wants to arrive before Packet A.
 	// Our Link Actor implementation must prevent this reordering.
-	emulatedConn := netem.NewConn(c1, netem.StreamProfile{
+	emulatedConn := flakenet.NewConn(c1, flakenet.StreamProfile{
 		Latency: policy.StaticLatency(100 * time.Millisecond),
 		Jitter:  policy.RandomJitter(50 * time.Millisecond),
 	})
@@ -111,7 +111,7 @@ func TestConn_Dynamic(t *testing.T) {
 	latVar := &policy.LatencyVar{}
 	latVar.Set(10 * time.Millisecond) // Start Fast
 
-	emulatedConn := netem.NewConn(c1, netem.StreamProfile{
+	emulatedConn := flakenet.NewConn(c1, flakenet.StreamProfile{
 		Latency: latVar,
 	})
 

@@ -1,4 +1,4 @@
-package netem_test
+package flakenet_test
 
 import (
 	"bytes"
@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kasader/netem"
-	"github.com/kasader/netem/policy"
+	"github.com/kasader/flakenet"
+	"github.com/kasader/flakenet/policy"
 )
 
 // Helper to create a real UDP listener on a random localhost port.
@@ -27,13 +27,13 @@ func TestPacketConn_Latency(t *testing.T) {
 	receiver := newLocalListener(t)
 	defer receiver.Close()
 
-	// 2. Setup the Sender (Wrapped with netem)
+	// 2. Setup the Sender (Wrapped with flakenet)
 	senderRaw := newLocalListener(t)
 	defer senderRaw.Close()
 
 	// Configure 50ms latency
 	const latency = 50 * time.Millisecond
-	sender := netem.NewPacketConn(senderRaw, netem.PacketProfile{
+	sender := flakenet.NewPacketConn(senderRaw, flakenet.PacketProfile{
 		Latency: policy.StaticLatency(latency),
 		// MTU/Loss/Bandwidth defaults apply
 	})
@@ -80,7 +80,7 @@ type forcedJitter struct {
 	count atomic.Int32
 }
 
-// Implementation of netem.Jitter interface.
+// Implementation of flakenet.Jitter interface.
 func (f *forcedJitter) Duration() time.Duration {
 	if f.count.Add(1)%2 == 1 {
 		return 50 * time.Millisecond // First packet: high delay
@@ -99,7 +99,7 @@ func TestPacketConn_Reordering(t *testing.T) {
 
 	jitterPolicy := &forcedJitter{}
 
-	sender := netem.NewPacketConn(senderRaw, netem.PacketProfile{
+	sender := flakenet.NewPacketConn(senderRaw, flakenet.PacketProfile{
 		Latency: policy.StaticLatency(100 * time.Millisecond),
 		Jitter:  jitterPolicy, // Injecting our custom deterministic policy
 	})

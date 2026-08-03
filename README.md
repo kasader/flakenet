@@ -1,8 +1,8 @@
-# netem
+# flakenet
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/kasader/netem/netem.svg)](https://pkg.go.dev/github.com/kasader/netem)
+[![Go Reference](https://pkg.go.dev/badge/github.com/kasader/flakenet/flakenet.svg)](https://pkg.go.dev/github.com/kasader/flakenet)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![GitHub Release](https://img.shields.io/github/v/release/kasader/netem?include_prereleases)](https://github.com/kasader/netem/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/kasader/flakenet?include_prereleases)](https://github.com/kasader/flakenet/releases)
 
 Wrap a `net.Conn` or `net.PacketConn` to simulate bandwidth limits, latency,
 jitter, and packet loss in Go tests. No root, no `tc`, no external processes.
