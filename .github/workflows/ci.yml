@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 on:
   workflow_dispatch:
@@ -8,16 +8,22 @@ on:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  ci:
+  # Runs before everything else so magic-nix-cache uploads the dev shell in
+  # this job's post step, which finishes before any `needs: setup` job starts.
+  # The rest then restore from the Actions cache instead of racing to populate
+  # it. It also gates on go.mod being tidy and the package compiling, since an
+  # inconsistent module makes every downstream job fail with noise rather than
+  # a real finding.
+  setup:
+    name: 🧊 Setup (warm cache + module gate)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -30,4 +36,92 @@ jobs:
           use-flakehub: false
           use-gha-cache: true
 
-      - run: nix develop -c make ci
+      - name: Warm the dev shell
+        run: nix develop ${{ github.workspace }} -c true
+
+      - name: Verify the module is tidy and compiles
+        run: |
+          set -euo pipefail
+          nix develop ${{ github.workspace }} -c make tidy
+          git diff --exit-code -- go.mod go.sum
+          nix develop ${{ github.workspace }} -c go build ./...
+
+  test:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Run unit tests
+        run: nix develop ${{ github.workspace }} -c make test
+
+      - name: Report coverage
+        run: |
+          set -euo pipefail
+          nix develop ${{ github.workspace }} -c make cover | tee cover.log
+          total=$(awk '/^total:/ {print $NF}' cover.log)
+          echo "**Test coverage:** $total" >>"$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: 🔍 Lint (golangci-lint)
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Check formatting
+        run: nix develop ${{ github.workspace }} -c make fmt-check
+
+      - name: Run golangci-lint
+        run: nix develop ${{ github.workspace }} -c make lint
+
+  vuln:
+    name: 🛡️ Vulnerabilities (govulncheck)
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Run govulncheck
+        run: nix develop ${{ github.workspace }} -c make vuln
+
+  flake:
+    name: ❄️ Flake (nix flake check)
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      # --all-systems so a flake that only evaluates on the runner's own
+      # system still fails here rather than on someone's laptop.
+      - name: Check the flake
+        run: nix flake check --all-systems
