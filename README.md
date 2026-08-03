@@ -5,54 +5,52 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub Release](https://img.shields.io/github/v/release/kasader/netem?include_prereleases)](https://github.com/kasader/netem/releases)
 
-`netem` is a lightweight Go network emulation package designed to wrap standard `net.Conn` and `net.PacketConn` interfaces. It allows simulation of real-world network conditions, like restricted bandwidth, high latency, jitter, and packet loss, directly within Go tests.
+Wrap a `net.Conn` or `net.PacketConn` to simulate bandwidth limits, latency,
+jitter, and packet loss in Go tests. No root, no `tc`, no external processes.
 
-## Why netem?
-
-While several tools exist for network emulation at the OS level (like `tc-netem` on Linux), `netem` provides this capability to Go testing. It allows you to wrap existing connections to simulate poor network conditions without requiring non-Go dependencies.
-
-### Key Improvements
-
-This package iterates on the design of [`cevatbarisyilmaz/lossy`][1], focusing on:
-
-- **Idiomatic API**: Designed to feel like a natural extension of the `net` package.
-
-- **Resource Efficiency**: Replaces the "goroutine-per-packet" models to prevent unbounded resource growth at high throughput.
-
-- **Stream Integrity**: Addresses the "World!Hello, " corruption bug. I.e, in stream-oriented protocols (TCP), high jitter should cause [Head-of-Line Blocking][2], and not out-of-order byte delivery.
-
-## Dynamic Configuration (Inspired by `slog`)
-
-Thread-safe indirection is usable out-of-the-box, inspired by the design of `slog.LevelVar`.
-
-Instead of static values, `netem` uses **Policies**. By using types like `policy.LatencyVar` or `policy.BandwidthVar`, you can alter network conditions on the fly for an *active* connection.
+OS-level tools like `tc-netem` shape traffic for the whole machine. `netem`
+works at the connection level, so tests stay hermetic and run anywhere.
 
 ## Usage
 
 ```go
-import (
-    "github.com/kasader/netem"
-    "github.com/kasader/netem/policy"
-)
+lat := &policy.LatencyVar{}
+lat.Set(100 * time.Millisecond)
 
-func TestMyNetworkCode(t *testing.T) {
-    // 1. Define a profile
-    lat := &policy.LatencyVar{}
-    lat.Set(100 * time.Millisecond)
+conn := flakenet.NewPacketConn(udpConn, flakenet.PacketProfile{
+    Latency: lat,
+    Jitter:  policy.RandomJitter(20 * time.Millisecond),
+    Loss:    policy.RandomLoss(0.01),
+})
 
-    profile := netem.PacketProfile{
-        Latency: lat,
-        Jitter:  policy.RandomJitter(20 * time.Millisecond),
-        Loss:    policy.RandomLoss(0.01), // 1% loss
-    }
-
-    // 2. Wrap an existing connection
-    conn := netem.NewPacketConn(rawUDPConn, profile)
-
-    // 3. Dynamically change conditions later
-    lat.Set(500 * time.Millisecond) 
-}
+// Conditions can change while the connection is live.
+lat.Set(500 * time.Millisecond)
 ```
 
-[1]: https://github.com/cevatbarisyilmaz/lossy "cevatbarisyilmaz/lossy"
-[2]: https://en.wikipedia.org/wiki/Head-of-line_blocking "Head-of-Line Blocking"
+## Policies
+
+Conditions are values, not constants. The `Var` types are safe for concurrent
+use and can be reset on an active connection, so a test can degrade a link
+mid-transfer without reconnecting.
+
+- `Bandwidth`: throughput ceiling in bits/sec (`StaticBandwidth`, `BandwidthVar`)
+- `Latency`: base propagation delay
+- `Jitter`: delivery-time variance (`RandomJitter` is amplitude-based)
+- `Loss`: packet drops (`RandomLoss`)
+- `Fault`: trigger failures or closure on demand
+
+## Conn vs PacketConn
+
+`Conn` is stream-oriented. Delayed bytes queue in FIFO order, so jitter shows up
+as head-of-line blocking rather than reordered or interleaved bytes.
+
+`PacketConn` is datagram-oriented. Packets reorder naturally, and a later
+datagram can overtake an earlier one under sufficient jitter.
+
+## Relation to `lossy`
+
+Builds on [cevatbarisyilmaz/lossy][1] with two changes: queued delivery instead
+of a goroutine per packet, which bounds memory at high throughput, and FIFO
+ordering on streams, which fixes byte interleaving under high jitter.
+
+[1]: https://github.com/cevatbarisyilmaz/lossy
