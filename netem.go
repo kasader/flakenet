@@ -18,8 +18,7 @@ const (
 	// EthernetJumboFrameMTU is used in data center environments to reduce CPU overhead (9000 bytes).
 	EthernetJumboFrameMTU = 9_000
 	// IPMaximumMTU represents the maximum possible size of an IP packet.
-	// This is commonly the default MTU for Linux loopback devices.
-	IPMaximumMTU = 65_536
+	IPMaximumMTU = 65_535
 )
 
 // LinkProfile defines the shared physical properties of a network link.
