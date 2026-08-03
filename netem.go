@@ -10,6 +10,10 @@ const (
 	IPv4HeaderSize = 20
 	// IPv6HeaderSize is the fixed size of an IPv6 header in bytes.
 	IPv6HeaderSize = 40
+	// TCPHeaderSize is the min size of a TCP header in bytes, excluding options.
+	TCPHeaderSize = 20
+	// UDPHeaderSize is the fixed size of a UDP header in bytes.
+	UDPHeaderSize = 8
 )
 
 const (
@@ -28,14 +32,17 @@ type LinkProfile struct {
 	Bandwidth Bandwidth
 }
 
+// getHeaderSize returns the combined L3+L4 per-packet overhead implied by addr.
 func getHeaderSize(addr net.Addr) int {
 	var ip net.IP
+	var transport int
 	switch v := addr.(type) {
 	case *net.UDPAddr:
-		ip = v.IP
+		ip, transport = v.IP, UDPHeaderSize
 	case *net.TCPAddr:
-		ip = v.IP
+		ip, transport = v.IP, TCPHeaderSize
 	case *net.IPAddr:
+		// Raw IP sockets carry the transport header in the payload.
 		ip = v.IP
 	// Best-effort to parse custom implementation (if provided).
 	default:
@@ -46,13 +53,27 @@ func getHeaderSize(addr net.Addr) int {
 		} else {
 			ip = net.ParseIP(host)
 		}
+		transport = transportHeaderSize(addr.Network())
 	}
 	// Determine our header overhead from the [net.IP].
 	overhead := IPv6HeaderSize // Assume worst case (IPv6)
 	if ip != nil && ip.To4() != nil {
 		overhead = IPv4HeaderSize
 	}
-	return overhead
+	return overhead + transport
+}
+
+// transportHeaderSize maps a [net.Addr] network name to its L4 overhead.
+// Networks we don't recognize contribute nothing.
+func transportHeaderSize(network string) int {
+	switch network {
+	case "tcp", "tcp4", "tcp6":
+		return TCPHeaderSize
+	case "udp", "udp4", "udp6":
+		return UDPHeaderSize
+	default:
+		return 0
+	}
 }
 
 func transmissionTime(bandwidth Bandwidth, size, overhead int) time.Duration {
