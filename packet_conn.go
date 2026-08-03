@@ -1,4 +1,4 @@
-package netem
+package flakenet
 
 import (
 	"container/heap"

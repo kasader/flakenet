@@ -1,3 +1,3 @@
-module github.com/kasader/netem
+module github.com/kasader/flakenet
 
 go 1.25.7
