@@ -58,6 +58,7 @@ type PacketProfile struct {
 type PacketConn struct {
 	net.PacketConn
 	wire
+	stickyErr
 	headerSize    int
 	mss           int
 	p             PacketProfile
@@ -100,7 +101,12 @@ func (c *PacketConn) Close() error {
 			close(c.stopCh)
 		}
 	})
-	return c.PacketConn.Close()
+	err := c.PacketConn.Close()
+	if err == nil {
+		// Surface a deferred write failure the caller never had a chance to see.
+		err = c.sticky()
+	}
+	return err
 }
 
 // SetDeadline implements net.PacketConn.
@@ -117,6 +123,9 @@ func (c *PacketConn) SetWriteDeadline(t time.Time) error {
 
 // WriteTo implements net.PacketConn.
 func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	if err := c.sticky(); err != nil {
+		return 0, err
+	}
 	if c.isWriteDeadline() {
 		return 0, os.ErrDeadlineExceeded
 	}
@@ -191,7 +200,8 @@ func (c *PacketConn) linkLoop() {
 					drop = c.p.Loss.Drop()
 				}
 				if !drop {
-					c.PacketConn.WriteTo(packet.data, packet.addr)
+					_, err := c.PacketConn.WriteTo(packet.data, packet.addr)
+					c.record(err)
 				}
 			}
 		}

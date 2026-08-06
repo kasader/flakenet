@@ -37,6 +37,7 @@ type writeReq struct {
 type Conn struct {
 	net.Conn
 	wire
+	stickyErr
 	headerSize    int
 	mss           int // maximum segment size used for bandwidth calculations
 	p             StreamProfile
@@ -84,7 +85,12 @@ func (c *Conn) Close() error {
 			close(c.stopCh)
 		}
 	})
-	return c.Conn.Close()
+	err := c.Conn.Close()
+	if err == nil {
+		// Surface a deferred write failure the caller never had a chance to see.
+		err = c.sticky()
+	}
+	return err
 }
 
 // SetDeadline implements net.Conn.
@@ -101,6 +107,9 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 
 // Write implements net.Conn.
 func (c *Conn) Write(b []byte) (n int, err error) {
+	if err := c.sticky(); err != nil {
+		return 0, err
+	}
 	if c.isWriteDeadline() {
 		return 0, os.ErrDeadlineExceeded
 	}
@@ -147,7 +156,8 @@ func (c *Conn) linkLoop() {
 			}
 			// Write; and because we pull from the channel we can
 			// assume that our packets must be written in order.
-			c.Conn.Write(req.data)
+			_, err := c.Conn.Write(req.data)
+			c.record(err)
 		}
 	}
 }

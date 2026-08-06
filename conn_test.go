@@ -2,6 +2,7 @@ package flakenet_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -189,5 +190,44 @@ func TestConn_Segmentation(t *testing.T) {
 	extra := make([]byte, 1)
 	if _, err := c2.Read(extra); err == nil {
 		t.Error("extra bytes on the wire, payload was duplicated")
+	}
+}
+
+var errWriteFailed = errors.New("write failed")
+
+// failConn fails every write to the underlying socket.
+type failConn struct {
+	net.Conn
+}
+
+func (failConn) Write([]byte) (int, error) { return 0, errWriteFailed }
+
+// TestConn_StickyWriteError verifies that a write which fails after Write has
+// already returned is reported to the caller rather than dropped.
+func TestConn_StickyWriteError(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	emulatedConn := flakenet.NewConn(failConn{Conn: c1}, flakenet.StreamProfile{})
+
+	// The first write only queues, so it cannot know the socket is broken.
+	if _, err := emulatedConn.Write([]byte("first")); err != nil {
+		t.Fatalf("Write() = %v, want nil while queueing", err)
+	}
+
+	var got error
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if _, err := emulatedConn.Write([]byte("again")); err != nil {
+			got = err
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !errors.Is(got, errWriteFailed) {
+		t.Fatalf("Write() = %v, want %v", got, errWriteFailed)
+	}
+	if err := emulatedConn.Close(); !errors.Is(err, errWriteFailed) {
+		t.Errorf("Close() = %v, want %v", err, errWriteFailed)
 	}
 }
