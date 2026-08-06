@@ -13,18 +13,23 @@ type JitterFunc func() time.Duration
 func (f JitterFunc) Duration() time.Duration { return f() }
 
 // RandomJitter returns a jitter function that selects a random value
-// uniformly distributed in the range [-amplitude, +amplitude].
+// uniformly distributed in the inclusive range [-amplitude, +amplitude].
 //
 // For example, RandomJitter(10*time.Millisecond) will return a duration
 // randomly chosen between -10ms and +10ms.
+//
+// A negative amplitude is treated as its absolute value; disabling jitter
+// silently would weaken the emulation rather than report the mistake.
 func RandomJitter(amplitude time.Duration) JitterFunc {
+	if amplitude < 0 {
+		amplitude = -amplitude
+	}
+	n := int64(amplitude)
 	return JitterFunc(func() time.Duration {
-		if amplitude == 0 {
+		if n == 0 {
 			return 0
 		}
-		n := int64(amplitude)
-		delta := rand.Int64N(2 * n)
-		return time.Duration(delta - n)
+		return time.Duration(rand.Int64N(2*n+1) - n)
 	})
 }
 

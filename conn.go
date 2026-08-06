@@ -36,15 +36,16 @@ type writeReq struct {
 // latency and jitter.
 type Conn struct {
 	net.Conn
+	wire
+	stickyErr
 	headerSize    int
 	mss           int // maximum segment size used for bandwidth calculations
 	p             StreamProfile
 	writeCh       chan writeReq // writeCh acts as a FIFO queue to prevent stream reordering.
 	writeDeadline atomic.Value
-	mu            sync.Mutex
-	nextWireTime  time.Time // Tracks when the next segment can be physically sent
 	stopOnce      sync.Once
 	stopCh        chan struct{}
+	doneCh        chan struct{} // closed once the link loop has finished draining
 }
 
 // NewConn wraps an existing net.Conn to emulate network conditions for stream-oriented
@@ -69,6 +70,7 @@ func NewConn(c net.Conn, p StreamProfile) net.Conn {
 		// TODO: Should the WriteCh length be configurable?
 		writeCh: make(chan writeReq, 1024),
 		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
 	}
 	nc.writeDeadline.Store(time.Time{})
 	go nc.linkLoop()
@@ -76,16 +78,20 @@ func NewConn(c net.Conn, p StreamProfile) net.Conn {
 }
 
 // Close implements net.Conn.
+//
+// Close is graceful: segments the link loop has already accepted are flushed
+// before the underlying conn is closed, ignoring their remaining schedule. A
+// link severed by Fault discards them instead.
 func (c *Conn) Close() error {
-	c.stopOnce.Do(func() {
-		if c.stopCh != nil {
-			// TODO: if this channel is closed before we
-			// return from c.Conn.Close() we could fail
-			// to return an error in Write()
-			close(c.stopCh)
-		}
-	})
-	return c.Conn.Close()
+	c.signalStop()
+	<-c.doneCh
+
+	err := c.Conn.Close()
+	if err == nil {
+		// Surface a deferred write failure the caller never had a chance to see.
+		err = c.sticky()
+	}
+	return err
 }
 
 // SetDeadline implements net.Conn.
@@ -102,45 +108,85 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 
 // Write implements net.Conn.
 func (c *Conn) Write(b []byte) (n int, err error) {
+	if err := c.sticky(); err != nil {
+		return 0, err
+	}
 	if c.isWriteDeadline() {
 		return 0, os.ErrDeadlineExceeded
 	}
 
 	sent := 0
 	for sent < len(b) {
-		chunkSize := min(len(b), c.mss)
-		finishTime := c.reserveWire(chunkSize)
-		arrival := finishTime.Add(delayTime(c.p.Latency, c.p.Jitter))
+		chunk := b[sent:min(sent+c.mss, len(b))]
+		finishTime := c.reserve(c.p.Bandwidth, len(chunk), c.headerSize)
 		req := writeReq{
-			data: make([]byte, len(b)),
-			due:  arrival,
+			data: make([]byte, len(chunk)),
+			due:  finishTime.Add(delayTime(c.p.Latency, c.p.Jitter)),
 		}
-		copy(req.data, b)
+		copy(req.data, chunk)
 
-		select {
-		case <-c.stopCh:
-			// simulation is stopped; flush out the remaining data immediately
-			nRaw, errRaw := c.Conn.Write(b[sent:])
-			return sent + nRaw, errRaw
-		case c.writeCh <- req:
-			sent += chunkSize
+		if err := c.enqueue(req); err != nil {
+			return sent, err
 		}
+		sent += len(chunk)
 	}
 	return sent, nil
 }
 
+// enqueue hands req to the link loop, giving up if the write deadline passes
+// while the queue is full.
+func (c *Conn) enqueue(req writeReq) error {
+	expired, stop := deadlineTimer(c.writeDeadline.Load().(time.Time))
+	defer stop()
+
+	select {
+	case <-c.stopCh:
+		// The link is down. Writing straight to the socket here would bypass
+		// the queue and reorder the stream, so report instead.
+		return net.ErrClosed
+	case <-expired:
+		return os.ErrDeadlineExceeded
+	case c.writeCh <- req:
+		return nil
+	}
+}
+
 var _ net.Conn = (*Conn)(nil)
+
+// signalStop stops the link loop without waiting for it to finish, so it is
+// safe to call from the loop itself.
+func (c *Conn) signalStop() {
+	c.stopOnce.Do(func() { close(c.stopCh) })
+}
+
+// drain flushes segments already accepted by the link loop, ignoring their
+// remaining schedule. Only the link loop consumes writeCh and it has stopped
+// by the time we get here, so the queued count cannot shrink underneath us.
+func (c *Conn) drain() {
+	for n := len(c.writeCh); n > 0; n-- {
+		req := <-c.writeCh
+		_, err := c.Conn.Write(req.data)
+		c.record(err)
+	}
+}
 
 // Handles writes in strict order.
 func (c *Conn) linkLoop() {
+	defer close(c.doneCh)
+
 	for {
 		select {
 		case <-c.stopCh:
+			c.drain()
 			return
 		case req := <-c.writeCh:
 			// Perform fault injection before writing.
 			if c.p.Fault != nil && c.p.Fault.ShouldClose() {
-				c.Close()
+				// A severed link drops what it was carrying, so stop without
+				// draining and leave the closed socket alone.
+				c.signalStop()
+				_ = c.Conn.Close()
+				return
 			}
 			// Wait until due time.
 			wait := time.Until(req.due)
@@ -149,7 +195,8 @@ func (c *Conn) linkLoop() {
 			}
 			// Write; and because we pull from the channel we can
 			// assume that our packets must be written in order.
-			c.Conn.Write(req.data)
+			_, err := c.Conn.Write(req.data)
+			c.record(err)
 		}
 	}
 }
@@ -157,26 +204,4 @@ func (c *Conn) linkLoop() {
 func (c *Conn) isWriteDeadline() bool {
 	wdl := c.writeDeadline.Load().(time.Time)
 	return !wdl.IsZero() && wdl.Before(time.Now())
-}
-
-// reserveWire calculates when a chunk of data will finish serializing on the wire.
-// It updates the virtual clock (nextWireTime) in a thread-safe manner.
-func (c *Conn) reserveWire(chunkSize int) time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := time.Now()
-	startTime := c.nextWireTime
-
-	// If the wire is idle, we start immediately.
-	// If the wire is busy, we queue behind the current transmission.
-	if startTime.Before(now) {
-		startTime = now
-	}
-
-	delay := transmissionTime(c.p.Bandwidth, chunkSize, c.headerSize)
-	finishTime := startTime.Add(delay)
-
-	c.nextWireTime = finishTime
-	return finishTime
 }

@@ -34,16 +34,30 @@ type LinkProfile struct {
 
 // getHeaderSize returns the combined L3+L4 per-packet overhead implied by addr.
 func getHeaderSize(addr net.Addr) int {
+	// Mock and custom conns can hand back a nil LocalAddr. A nil typed
+	// pointer still tells us the transport, so only the IP is unknown and
+	// the worst-case L3 fallback below covers it.
+	if addr == nil {
+		return IPv6HeaderSize
+	}
 	var ip net.IP
 	var transport int
 	switch v := addr.(type) {
 	case *net.UDPAddr:
-		ip, transport = v.IP, UDPHeaderSize
+		transport = UDPHeaderSize
+		if v != nil {
+			ip = v.IP
+		}
 	case *net.TCPAddr:
-		ip, transport = v.IP, TCPHeaderSize
+		transport = TCPHeaderSize
+		if v != nil {
+			ip = v.IP
+		}
 	case *net.IPAddr:
 		// Raw IP sockets carry the transport header in the payload.
-		ip = v.IP
+		if v != nil {
+			ip = v.IP
+		}
 	// Best-effort to parse custom implementation (if provided).
 	default:
 		host, _, err := net.SplitHostPort(addr.String())

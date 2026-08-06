@@ -57,6 +57,8 @@ type PacketProfile struct {
 // than a previous one.
 type PacketConn struct {
 	net.PacketConn
+	wire
+	stickyErr
 	headerSize    int
 	mss           int
 	p             PacketProfile
@@ -64,6 +66,7 @@ type PacketConn struct {
 	writeDeadline atomic.Value
 	stopOnce      sync.Once
 	stopCh        chan struct{}
+	doneCh        chan struct{} // closed once the link loop has finished draining
 }
 
 // NewPacketConn wraps an existing net.PacketConn to emulate network conditions
@@ -79,13 +82,14 @@ func NewPacketConn(c net.PacketConn, p PacketProfile) net.PacketConn {
 
 	nc := &PacketConn{
 		PacketConn: c,
-		headerSize: getHeaderSize(c.LocalAddr()),
+		headerSize: headerSize,
 		mss:        mss,
 		p:          p,
 
 		// TODO: Should the WriteCh length be configurable?
 		writeCh: make(chan packetReq, 1024),
 		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
 	}
 	nc.writeDeadline.Store(time.Time{})
 	go nc.linkLoop()
@@ -93,13 +97,20 @@ func NewPacketConn(c net.PacketConn, p PacketProfile) net.PacketConn {
 }
 
 // Close implements net.PacketConn.
+//
+// Close is graceful: datagrams the link loop has already accepted are
+// delivered in due order before the underlying conn is closed, ignoring
+// their remaining wait.
 func (c *PacketConn) Close() error {
-	c.stopOnce.Do(func() {
-		if c.stopCh != nil {
-			close(c.stopCh)
-		}
-	})
-	return c.PacketConn.Close()
+	c.signalStop()
+	<-c.doneCh
+
+	err := c.PacketConn.Close()
+	if err == nil {
+		// Surface a deferred write failure the caller never had a chance to see.
+		err = c.sticky()
+	}
+	return err
 }
 
 // SetDeadline implements net.PacketConn.
@@ -116,14 +127,16 @@ func (c *PacketConn) SetWriteDeadline(t time.Time) error {
 
 // WriteTo implements net.PacketConn.
 func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	if err := c.sticky(); err != nil {
+		return 0, err
+	}
 	if c.isWriteDeadline() {
 		return 0, os.ErrDeadlineExceeded
 	}
-	serializationDelay := transmissionTime(c.p.Bandwidth, len(p), c.headerSize)
-	propagationDelay := delayTime(c.p.Latency, c.p.Jitter)
-
-	totalDelay := serializationDelay + propagationDelay
-	due := time.Now().Add(totalDelay)
+	// Reserve the link first so concurrent datagrams queue behind one another
+	// instead of each paying the serialization delay independently.
+	finish := c.reserve(c.p.Bandwidth, len(p), c.headerSize)
+	due := finish.Add(delayTime(c.p.Latency, c.p.Jitter))
 
 	req := packetReq{
 		data: make([]byte, len(p)),
@@ -132,9 +145,14 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 	copy(req.data, p)
 
+	expired, stop := deadlineTimer(c.writeDeadline.Load().(time.Time))
+	defer stop()
+
 	select {
 	case <-c.stopCh:
-		return c.PacketConn.WriteTo(p, addr)
+		return 0, net.ErrClosed
+	case <-expired:
+		return 0, os.ErrDeadlineExceeded
 	case c.writeCh <- req:
 		return len(p), nil
 	}
@@ -147,8 +165,37 @@ func (c *PacketConn) isWriteDeadline() bool {
 	return !wdl.IsZero() && wdl.Before(time.Now())
 }
 
+// signalStop stops the link loop without waiting for it to finish, so it is
+// safe to call from the loop itself.
+func (c *PacketConn) signalStop() {
+	c.stopOnce.Do(func() { close(c.stopCh) })
+}
+
+// send applies the loss policy and delivers the datagram.
+func (c *PacketConn) send(packet packetReq) {
+	if c.p.Loss != nil && c.p.Loss.Drop() {
+		return
+	}
+	_, err := c.PacketConn.WriteTo(packet.data, packet.addr)
+	c.record(err)
+}
+
+// drain delivers everything still queued or scheduled, in due order, ignoring
+// the remaining wait. Only the link loop consumes writeCh and it has stopped
+// by the time we get here, so the queued count cannot shrink underneath us.
+func (c *PacketConn) drain(pq *packetHeap) {
+	for n := len(c.writeCh); n > 0; n-- {
+		heap.Push(pq, <-c.writeCh)
+	}
+	for pq.Len() > 0 {
+		c.send(heap.Pop(pq).(packetReq))
+	}
+}
+
 // Handles writes in due order (scheduled).
 func (c *PacketConn) linkLoop() {
+	defer close(c.doneCh)
+
 	pq := &packetHeap{}
 	heap.Init(pq)
 
@@ -161,6 +208,7 @@ func (c *PacketConn) linkLoop() {
 	for {
 		select {
 		case <-c.stopCh:
+			c.drain(pq)
 			return
 
 		case req := <-c.writeCh:
@@ -183,16 +231,7 @@ func (c *PacketConn) linkLoop() {
 					timer.Reset(next.due.Sub(now))
 					break
 				}
-				packet := heap.Pop(pq).(packetReq)
-
-				// Apply loss policy.
-				drop := false
-				if c.p.Loss != nil {
-					drop = c.p.Loss.Drop()
-				}
-				if !drop {
-					c.PacketConn.WriteTo(packet.data, packet.addr)
-				}
+				c.send(heap.Pop(pq).(packetReq))
 			}
 		}
 	}
