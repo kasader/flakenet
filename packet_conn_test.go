@@ -127,3 +127,49 @@ func TestPacketConn_Reordering(t *testing.T) {
 		t.Errorf("bad ordering: got %q, want %q", buf[:n], "Packet A")
 	}
 }
+
+// TestPacketConn_Bandwidth verifies that Bandwidth is a throughput ceiling and
+// not just added latency: datagrams must queue behind one another on the wire.
+func TestPacketConn_Bandwidth(t *testing.T) {
+	receiver := newLocalListener(t)
+	defer receiver.Close()
+
+	senderRaw := newLocalListener(t)
+	defer senderRaw.Close()
+
+	// 1 Mbit/s with 1250-byte payloads is ~10.2ms of serialization each,
+	// counting the 28 bytes of IPv4+UDP overhead on the loopback.
+	const (
+		packets = 8
+		size    = 1_250
+	)
+	sender := flakenet.NewPacketConn(senderRaw, flakenet.PacketProfile{
+		Bandwidth: policy.StaticBandwidth(1_000_000),
+	})
+	defer sender.Close()
+
+	payload := make([]byte, size)
+	start := time.Now()
+	for range packets {
+		if _, err := sender.WriteTo(payload, receiver.LocalAddr()); err != nil {
+			t.Fatalf("WriteTo failed: %v", err)
+		}
+	}
+
+	if err := receiver.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2_048)
+	for i := range packets {
+		if _, _, err := receiver.ReadFrom(buf); err != nil {
+			t.Fatalf("packet %d: %v", i, err)
+		}
+	}
+	elapsed := time.Since(start)
+
+	// Serializing all 8 takes ~82ms. Without a shared wire clock every packet
+	// pays ~10ms on its own and the whole batch lands in roughly that time.
+	if floor := 60 * time.Millisecond; elapsed < floor {
+		t.Errorf("batch drained in %v, want >%v; bandwidth is not limiting", elapsed, floor)
+	}
+}

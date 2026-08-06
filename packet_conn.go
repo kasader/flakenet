@@ -57,6 +57,7 @@ type PacketProfile struct {
 // than a previous one.
 type PacketConn struct {
 	net.PacketConn
+	wire
 	headerSize    int
 	mss           int
 	p             PacketProfile
@@ -79,7 +80,7 @@ func NewPacketConn(c net.PacketConn, p PacketProfile) net.PacketConn {
 
 	nc := &PacketConn{
 		PacketConn: c,
-		headerSize: getHeaderSize(c.LocalAddr()),
+		headerSize: headerSize,
 		mss:        mss,
 		p:          p,
 
@@ -119,11 +120,10 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if c.isWriteDeadline() {
 		return 0, os.ErrDeadlineExceeded
 	}
-	serializationDelay := transmissionTime(c.p.Bandwidth, len(p), c.headerSize)
-	propagationDelay := delayTime(c.p.Latency, c.p.Jitter)
-
-	totalDelay := serializationDelay + propagationDelay
-	due := time.Now().Add(totalDelay)
+	// Reserve the link first so concurrent datagrams queue behind one another
+	// instead of each paying the serialization delay independently.
+	finish := c.reserve(c.p.Bandwidth, len(p), c.headerSize)
+	due := finish.Add(delayTime(c.p.Latency, c.p.Jitter))
 
 	req := packetReq{
 		data: make([]byte, len(p)),

@@ -36,13 +36,12 @@ type writeReq struct {
 // latency and jitter.
 type Conn struct {
 	net.Conn
+	wire
 	headerSize    int
 	mss           int // maximum segment size used for bandwidth calculations
 	p             StreamProfile
 	writeCh       chan writeReq // writeCh acts as a FIFO queue to prevent stream reordering.
 	writeDeadline atomic.Value
-	mu            sync.Mutex
-	nextWireTime  time.Time // Tracks when the next segment can be physically sent
 	stopOnce      sync.Once
 	stopCh        chan struct{}
 }
@@ -109,7 +108,7 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 	sent := 0
 	for sent < len(b) {
 		chunk := b[sent:min(sent+c.mss, len(b))]
-		finishTime := c.reserveWire(len(chunk))
+		finishTime := c.reserve(c.p.Bandwidth, len(chunk), c.headerSize)
 		req := writeReq{
 			data: make([]byte, len(chunk)),
 			due:  finishTime.Add(delayTime(c.p.Latency, c.p.Jitter)),
@@ -156,26 +155,4 @@ func (c *Conn) linkLoop() {
 func (c *Conn) isWriteDeadline() bool {
 	wdl := c.writeDeadline.Load().(time.Time)
 	return !wdl.IsZero() && wdl.Before(time.Now())
-}
-
-// reserveWire calculates when a chunk of data will finish serializing on the wire.
-// It updates the virtual clock (nextWireTime) in a thread-safe manner.
-func (c *Conn) reserveWire(chunkSize int) time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := time.Now()
-	startTime := c.nextWireTime
-
-	// If the wire is idle, we start immediately.
-	// If the wire is busy, we queue behind the current transmission.
-	if startTime.Before(now) {
-		startTime = now
-	}
-
-	delay := transmissionTime(c.p.Bandwidth, chunkSize, c.headerSize)
-	finishTime := startTime.Add(delay)
-
-	c.nextWireTime = finishTime
-	return finishTime
 }
