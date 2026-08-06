@@ -8,6 +8,7 @@ issues:
 linters:
   default: none
   enable:
+    - errcheck
     - revive
     - govet
     - misspell
@@ -38,6 +39,12 @@ linters:
 
   exclusions:
     warn-unused: true
+    rules:
+      # Deferred Close in tests is noise. errcheck is here for the production
+      # write paths, where a dropped error hid a real bug (see #17).
+      - path: _test\.go
+        linters:
+          - errcheck
 
   settings:
     embeddedstructfieldcheck:
