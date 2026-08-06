@@ -5,10 +5,10 @@
 [![GitHub Release](https://img.shields.io/github/v/release/kasader/flakenet?include_prereleases)](https://github.com/kasader/flakenet/releases)
 
 Wrap a `net.Conn` or `net.PacketConn` to simulate bandwidth limits, latency,
-jitter, and packet loss in Go tests. No root, no `tc`, no external processes.
+jitter, and packet loss in Go tests.
 
-OS-level tools like `tc-netem` shape traffic for the whole machine. `netem`
-works at the connection level, so tests stay hermetic and run anywhere.
+`flakenet` works at the connection level, so tests stay hermetic and run
+anywhere.
 
 ## Usage
 
