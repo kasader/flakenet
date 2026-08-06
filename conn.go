@@ -136,6 +136,15 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 // enqueue hands req to the link loop, giving up if the write deadline passes
 // while the queue is full.
 func (c *Conn) enqueue(req writeReq) error {
+	// A select picks at random among ready cases, so a down link has to be
+	// checked on its own. Otherwise a write could still land in the queue
+	// while stopCh is closed, purely because the buffer had room.
+	select {
+	case <-c.stopCh:
+		return net.ErrClosed
+	default:
+	}
+
 	expired, stop := deadlineTimer(c.writeDeadline.Load().(time.Time))
 	defer stop()
 

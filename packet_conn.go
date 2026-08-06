@@ -150,6 +150,15 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 	copy(req.data, p)
 
+	// A select picks at random among ready cases, so a down link has to be
+	// checked on its own. Otherwise a write could still land in the queue while
+	// stopCh is closed, purely because the buffer had room.
+	select {
+	case <-c.stopCh:
+		return 0, net.ErrClosed
+	default:
+	}
+
 	expired, stop := deadlineTimer(c.writeDeadline.Load().(time.Time))
 	defer stop()
 
