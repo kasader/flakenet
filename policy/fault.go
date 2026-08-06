@@ -13,7 +13,7 @@ func (f FaultFunc) ShouldClose() bool { return f() }
 
 // RandomClose returns a function that closes connections with probability rate (0.0 to 1.0).
 func RandomClose(rate float64) FaultFunc {
-	return FaultFunc(func() bool { return dropAt(rate) })
+	return FaultFunc(func() bool { return dropAt(global{}, rate) })
 }
 
 // FaultVar is a thread-safe, mutable [Fault] provider.
@@ -30,5 +30,5 @@ func (v *FaultVar) Set(rate float64) { v.val.Store(math.Float64bits(rate)) }
 
 // ShouldClose implements the [Fault] interface.
 func (v *FaultVar) ShouldClose() bool {
-	return dropAt(math.Float64frombits(v.val.Load()))
+	return dropAt(global{}, math.Float64frombits(v.val.Load()))
 }
