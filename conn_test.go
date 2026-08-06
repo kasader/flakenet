@@ -1,6 +1,7 @@
 package flakenet_test
 
 import (
+	"bytes"
 	"io"
 	"net"
 	"testing"
@@ -136,5 +137,57 @@ func TestConn_Dynamic(t *testing.T) {
 	// 4. Measure Slow
 	if d := measure(); d < 200*time.Millisecond {
 		t.Errorf("Expected slow (>200ms) after update, got %v", d)
+	}
+}
+
+// TestConn_Segmentation verifies that a payload larger than the MSS is split
+// into segments rather than retransmitted whole once per segment.
+func TestConn_Segmentation(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	// Header overhead on a pipe is worst-case IPv6, so the MSS is 100-40.
+	emulatedConn := flakenet.NewConn(c1, flakenet.StreamProfile{MTU: 100})
+
+	payload := make([]byte, 1_000)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	got := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, len(payload))
+		if _, err := io.ReadFull(c2, buf); err != nil {
+			got <- nil
+			return
+		}
+		got <- buf
+	}()
+
+	n, err := emulatedConn.Write(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(payload) {
+		t.Errorf("Write() = %d, want %d", n, len(payload))
+	}
+
+	select {
+	case received := <-got:
+		if !bytes.Equal(received, payload) {
+			t.Error("payload corrupted in transit")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for payload")
+	}
+
+	// Anything still queued means we wrote more than the payload.
+	if err := c2.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	extra := make([]byte, 1)
+	if _, err := c2.Read(extra); err == nil {
+		t.Error("extra bytes on the wire, payload was duplicated")
 	}
 }

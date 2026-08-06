@@ -108,14 +108,13 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 
 	sent := 0
 	for sent < len(b) {
-		chunkSize := min(len(b), c.mss)
-		finishTime := c.reserveWire(chunkSize)
-		arrival := finishTime.Add(delayTime(c.p.Latency, c.p.Jitter))
+		chunk := b[sent:min(sent+c.mss, len(b))]
+		finishTime := c.reserveWire(len(chunk))
 		req := writeReq{
-			data: make([]byte, len(b)),
-			due:  arrival,
+			data: make([]byte, len(chunk)),
+			due:  finishTime.Add(delayTime(c.p.Latency, c.p.Jitter)),
 		}
-		copy(req.data, b)
+		copy(req.data, chunk)
 
 		select {
 		case <-c.stopCh:
@@ -123,7 +122,7 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 			nRaw, errRaw := c.Conn.Write(b[sent:])
 			return sent + nRaw, errRaw
 		case c.writeCh <- req:
-			sent += chunkSize
+			sent += len(chunk)
 		}
 	}
 	return sent, nil
