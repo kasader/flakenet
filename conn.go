@@ -45,6 +45,7 @@ type Conn struct {
 	writeDeadline atomic.Value
 	stopOnce      sync.Once
 	stopCh        chan struct{}
+	doneCh        chan struct{} // closed once the link loop has finished draining
 }
 
 // NewConn wraps an existing net.Conn to emulate network conditions for stream-oriented
@@ -69,6 +70,7 @@ func NewConn(c net.Conn, p StreamProfile) net.Conn {
 		// TODO: Should the WriteCh length be configurable?
 		writeCh: make(chan writeReq, 1024),
 		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
 	}
 	nc.writeDeadline.Store(time.Time{})
 	go nc.linkLoop()
@@ -76,15 +78,14 @@ func NewConn(c net.Conn, p StreamProfile) net.Conn {
 }
 
 // Close implements net.Conn.
+//
+// Close is graceful: segments the link loop has already accepted are flushed
+// before the underlying conn is closed, ignoring their remaining schedule. A
+// link severed by Fault discards them instead.
 func (c *Conn) Close() error {
-	c.stopOnce.Do(func() {
-		if c.stopCh != nil {
-			// TODO: if this channel is closed before we
-			// return from c.Conn.Close() we could fail
-			// to return an error in Write()
-			close(c.stopCh)
-		}
-	})
+	c.signalStop()
+	<-c.doneCh
+
 	err := c.Conn.Close()
 	if err == nil {
 		// Surface a deferred write failure the caller never had a chance to see.
@@ -126,9 +127,9 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 
 		select {
 		case <-c.stopCh:
-			// simulation is stopped; flush out the remaining data immediately
-			nRaw, errRaw := c.Conn.Write(b[sent:])
-			return sent + nRaw, errRaw
+			// The link is down. Writing straight to the socket here would
+			// bypass the queue and reorder the stream, so report instead.
+			return sent, net.ErrClosed
 		case c.writeCh <- req:
 			sent += len(chunk)
 		}
@@ -138,16 +139,40 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 
 var _ net.Conn = (*Conn)(nil)
 
+// signalStop stops the link loop without waiting for it to finish, so it is
+// safe to call from the loop itself.
+func (c *Conn) signalStop() {
+	c.stopOnce.Do(func() { close(c.stopCh) })
+}
+
+// drain flushes segments already accepted by the link loop, ignoring their
+// remaining schedule. Only the link loop consumes writeCh and it has stopped
+// by the time we get here, so the queued count cannot shrink underneath us.
+func (c *Conn) drain() {
+	for n := len(c.writeCh); n > 0; n-- {
+		req := <-c.writeCh
+		_, err := c.Conn.Write(req.data)
+		c.record(err)
+	}
+}
+
 // Handles writes in strict order.
 func (c *Conn) linkLoop() {
+	defer close(c.doneCh)
+
 	for {
 		select {
 		case <-c.stopCh:
+			c.drain()
 			return
 		case req := <-c.writeCh:
 			// Perform fault injection before writing.
 			if c.p.Fault != nil && c.p.Fault.ShouldClose() {
-				c.Close()
+				// A severed link drops what it was carrying, so stop without
+				// draining and leave the closed socket alone.
+				c.signalStop()
+				_ = c.Conn.Close()
+				return
 			}
 			// Wait until due time.
 			wait := time.Until(req.due)

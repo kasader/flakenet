@@ -231,3 +231,79 @@ func TestConn_StickyWriteError(t *testing.T) {
 		t.Errorf("Close() = %v, want %v", err, errWriteFailed)
 	}
 }
+
+// TestConn_CloseDrainsQueuedData verifies that a graceful Close flushes data
+// the link loop already accepted rather than discarding it.
+func TestConn_CloseDrainsQueuedData(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	// The latency far exceeds the test, so the segment is certain to still be
+	// in flight when Close lands.
+	emulatedConn := flakenet.NewConn(c1, flakenet.StreamProfile{
+		Latency: policy.StaticLatency(500 * time.Millisecond),
+	})
+
+	payload := []byte("queued")
+	got := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, len(payload))
+		if _, err := io.ReadFull(c2, buf); err != nil {
+			got <- nil
+			return
+		}
+		got <- buf
+	}()
+
+	if _, err := emulatedConn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := emulatedConn.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+
+	select {
+	case received := <-got:
+		if !bytes.Equal(received, payload) {
+			t.Errorf("received %q, want %q", received, payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued data was discarded on Close")
+	}
+}
+
+// TestConn_FaultSeversLink verifies that an injected fault closes the conn and
+// discards what it was carrying, rather than writing to the closed socket.
+func TestConn_FaultSeversLink(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+
+	emulatedConn := flakenet.NewConn(c1, flakenet.StreamProfile{
+		Fault: policy.FaultFunc(func() bool { return true }),
+	})
+
+	if _, err := emulatedConn.Write([]byte("dropped")); err != nil {
+		t.Fatalf("Write() = %v, want nil while queueing", err)
+	}
+
+	if err := c2.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 16)
+	if n, err := c2.Read(buf); err == nil {
+		t.Errorf("Read() = %q, want an error; the severed link still delivered", buf[:n])
+	}
+
+	var got error
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if _, err := emulatedConn.Write([]byte("x")); err != nil {
+			got = err
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !errors.Is(got, net.ErrClosed) {
+		t.Errorf("Write() after fault = %v, want %v", got, net.ErrClosed)
+	}
+}

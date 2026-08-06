@@ -173,3 +173,37 @@ func TestPacketConn_Bandwidth(t *testing.T) {
 		t.Errorf("batch drained in %v, want >%v; bandwidth is not limiting", elapsed, floor)
 	}
 }
+
+// TestPacketConn_CloseDrainsQueuedData verifies that a graceful Close delivers
+// datagrams the link loop already accepted.
+func TestPacketConn_CloseDrainsQueuedData(t *testing.T) {
+	receiver := newLocalListener(t)
+	defer receiver.Close()
+
+	senderRaw := newLocalListener(t)
+	defer senderRaw.Close()
+
+	sender := flakenet.NewPacketConn(senderRaw, flakenet.PacketProfile{
+		Latency: policy.StaticLatency(500 * time.Millisecond),
+	})
+
+	payload := []byte("queued")
+	if _, err := sender.WriteTo(payload, receiver.LocalAddr()); err != nil {
+		t.Fatalf("WriteTo failed: %v", err)
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+
+	if err := receiver.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1_024)
+	n, _, err := receiver.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("queued datagram was discarded on Close: %v", err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Errorf("received %q, want %q", buf[:n], payload)
+	}
+}
