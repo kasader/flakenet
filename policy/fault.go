@@ -31,8 +31,8 @@ type FaultVar struct {
 // Set updates the fault rate safely.
 func (v *FaultVar) Set(rate float64) { v.val.Store(math.Float64bits(rate)) }
 
-// Drop implements the [Fault] interface.
-func (v *FaultVar) Drop() bool {
+// ShouldClose implements the [Fault] interface.
+func (v *FaultVar) ShouldClose() bool {
 	rate := math.Float64frombits(v.val.Load())
-	return RandomLoss(rate)()
+	return RandomClose(rate)()
 }
