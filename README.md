@@ -5,10 +5,12 @@
 [![GitHub Release](https://img.shields.io/github/v/release/kasader/flakenet?include_prereleases)](https://github.com/kasader/flakenet/releases)
 
 Wrap a `net.Conn` or `net.PacketConn` to simulate bandwidth limits, latency,
-jitter, and packet loss in Go tests.
+jitter, and packet loss in Go tests. `flakenet` works at the connection level,
+so tests stay hermetic and run anywhere.
 
-`flakenet` works at the connection level, so tests stay hermetic and run
-anywhere.
+Iterates on [cevatbarisyilmaz/lossy][1] with two changes: queued delivery instead
+of a goroutine per packet, which bounds memory at high throughput, and FIFO
+ordering on streams, which fixes byte interleaving under high jitter.
 
 ## Usage
 
@@ -48,11 +50,5 @@ make        # list targets
 make init   # install the pre-commit hook
 make ci     # fmt-check, lint, test, vuln
 ```
-
-## Relation to `lossy`
-
-Builds on [cevatbarisyilmaz/lossy][1] with two changes: queued delivery instead
-of a goroutine per packet, which bounds memory at high throughput, and FIFO
-ordering on streams, which fixes byte interleaving under high jitter.
 
 [1]: https://github.com/cevatbarisyilmaz/lossy
