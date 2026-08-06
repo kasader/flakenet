@@ -2,6 +2,7 @@ package flakenet_test
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -205,5 +206,58 @@ func TestPacketConn_CloseDrainsQueuedData(t *testing.T) {
 	}
 	if !bytes.Equal(buf[:n], payload) {
 		t.Errorf("received %q, want %q", buf[:n], payload)
+	}
+}
+
+// TestPacketConn_MTU verifies that the link MTU is enforced rather than
+// silently ignored, and that the payload boundary is exact.
+func TestPacketConn_MTU(t *testing.T) {
+	receiver := newLocalListener(t)
+	defer receiver.Close()
+
+	senderRaw := newLocalListener(t)
+	defer senderRaw.Close()
+
+	// A localhost UDP conn reports a v4 addr, so overhead is IPv4+UDP.
+	const mtu = 500
+	mss := mtu - (flakenet.IPv4HeaderSize + flakenet.UDPHeaderSize)
+
+	sender := flakenet.NewPacketConn(senderRaw, flakenet.PacketProfile{MTU: mtu})
+	defer sender.Close()
+
+	// Exactly the MSS must still go out.
+	n, err := sender.WriteTo(make([]byte, mss), receiver.LocalAddr())
+	if err != nil {
+		t.Errorf("WriteTo(%d bytes) = %v, want nil at exactly the MSS", mss, err)
+	}
+	if n != mss {
+		t.Errorf("WriteTo() = %d, want %d", n, mss)
+	}
+
+	// One byte over must not.
+	if _, err := sender.WriteTo(
+		make([]byte, mss+1),
+		receiver.LocalAddr(),
+	); !errors.Is(
+		err,
+		flakenet.ErrMessageTooLong,
+	) {
+		t.Errorf("WriteTo(%d bytes) = %v, want %v", mss+1, err, flakenet.ErrMessageTooLong)
+	}
+
+	// The rejected datagram must not have reached the receiver.
+	if err := receiver.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2_048)
+	got, _, err := receiver.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("the MSS-sized datagram never arrived: %v", err)
+	}
+	if got != mss {
+		t.Errorf("received %d bytes, want %d", got, mss)
+	}
+	if _, _, err := receiver.ReadFrom(buf); err == nil {
+		t.Error("an oversized datagram reached the wire")
 	}
 }

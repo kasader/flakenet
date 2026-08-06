@@ -60,7 +60,7 @@ type PacketConn struct {
 	wire
 	stickyErr
 	headerSize    int
-	mss           int
+	mss           int // largest payload the link MTU admits
 	p             PacketProfile
 	writeCh       chan packetReq
 	writeDeadline atomic.Value
@@ -132,6 +132,11 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 	if c.isWriteDeadline() {
 		return 0, os.ErrDeadlineExceeded
+	}
+	// A datagram is all-or-nothing, so an oversized one never reaches the wire
+	// and must not consume link time.
+	if len(p) > c.mss {
+		return 0, ErrMessageTooLong
 	}
 	// Reserve the link first so concurrent datagrams queue behind one another
 	// instead of each paying the serialization delay independently.
