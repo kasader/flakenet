@@ -38,14 +38,6 @@ mid-transfer without reconnecting.
 - `Loss`: packet drops (`RandomLoss`)
 - `Fault`: trigger failures or closure on demand
 
-## Conn vs PacketConn
-
-`Conn` is stream-oriented. Delayed bytes queue in FIFO order, so jitter shows up
-as head-of-line blocking rather than reordered or interleaved bytes.
-
-`PacketConn` is datagram-oriented. Packets reorder naturally, and a later
-datagram can overtake an earlier one under sufficient jitter.
-
 ## Development
 
 Tooling comes from the Nix flake. `direnv allow` (or `nix develop`) gets you a
