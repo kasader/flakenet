@@ -38,6 +38,11 @@ func TestGetHeaderSize(t *testing.T) {
 		{"custom udp6", stubAddr{"udp6", "[::1]:53"}, IPv6HeaderSize + UDPHeaderSize},
 		// Unparseable address and unknown network: worst-case L3, no L4.
 		{"pipe", stubAddr{"pipe", "pipe"}, IPv6HeaderSize},
+		// Nil addrs: worst-case L3, plus whatever transport the type implies.
+		{"nil addr", nil, IPv6HeaderSize},
+		{"nil udp", (*net.UDPAddr)(nil), IPv6HeaderSize + UDPHeaderSize},
+		{"nil tcp", (*net.TCPAddr)(nil), IPv6HeaderSize + TCPHeaderSize},
+		{"nil ip", (*net.IPAddr)(nil), IPv6HeaderSize},
 	}
 
 	for _, tt := range tests {
