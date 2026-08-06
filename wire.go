@@ -55,3 +55,13 @@ func (s *stickyErr) sticky() error {
 	}
 	return nil
 }
+
+// deadlineTimer returns a channel that fires at t, plus a stop func. A zero t
+// means no deadline is set, and the nil channel it returns blocks forever.
+func deadlineTimer(t time.Time) (<-chan time.Time, func()) {
+	if t.IsZero() {
+		return nil, func() {}
+	}
+	timer := time.NewTimer(time.Until(t))
+	return timer.C, func() { timer.Stop() }
+}

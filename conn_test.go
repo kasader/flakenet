@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -305,5 +306,57 @@ func TestConn_FaultSeversLink(t *testing.T) {
 	}
 	if !errors.Is(got, net.ErrClosed) {
 		t.Errorf("Write() after fault = %v, want %v", got, net.ErrClosed)
+	}
+}
+
+// blockingConn stalls the link loop until released, ignoring deadlines, so the
+// queue behind it stays full.
+type blockingConn struct {
+	net.Conn
+
+	release chan struct{}
+}
+
+func (b blockingConn) Write(p []byte) (int, error) {
+	<-b.release
+	return len(p), nil
+}
+
+// TestConn_WriteDeadlineWhileBlocked verifies that a Write blocked on a full
+// queue gives up at its deadline instead of waiting indefinitely.
+func TestConn_WriteDeadlineWhileBlocked(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	release := make(chan struct{})
+	defer close(release)
+
+	emulatedConn := flakenet.NewConn(
+		blockingConn{Conn: c1, release: release},
+		flakenet.StreamProfile{},
+	)
+	if err := emulatedConn.SetWriteDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+
+	blocked := make(chan error, 1)
+	go func() {
+		// Fills the queue in well under the deadline, then blocks on the send.
+		for {
+			if _, err := emulatedConn.Write([]byte("x")); err != nil {
+				blocked <- err
+				return
+			}
+		}
+	}()
+
+	select {
+	case err := <-blocked:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Errorf("Write() = %v, want %v", err, os.ErrDeadlineExceeded)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Write blocked well past its deadline")
 	}
 }

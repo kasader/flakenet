@@ -145,9 +145,14 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 	copy(req.data, p)
 
+	expired, stop := deadlineTimer(c.writeDeadline.Load().(time.Time))
+	defer stop()
+
 	select {
 	case <-c.stopCh:
 		return 0, net.ErrClosed
+	case <-expired:
+		return 0, os.ErrDeadlineExceeded
 	case c.writeCh <- req:
 		return len(p), nil
 	}

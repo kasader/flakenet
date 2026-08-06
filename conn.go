@@ -125,16 +125,30 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 		}
 		copy(req.data, chunk)
 
-		select {
-		case <-c.stopCh:
-			// The link is down. Writing straight to the socket here would
-			// bypass the queue and reorder the stream, so report instead.
-			return sent, net.ErrClosed
-		case c.writeCh <- req:
-			sent += len(chunk)
+		if err := c.enqueue(req); err != nil {
+			return sent, err
 		}
+		sent += len(chunk)
 	}
 	return sent, nil
+}
+
+// enqueue hands req to the link loop, giving up if the write deadline passes
+// while the queue is full.
+func (c *Conn) enqueue(req writeReq) error {
+	expired, stop := deadlineTimer(c.writeDeadline.Load().(time.Time))
+	defer stop()
+
+	select {
+	case <-c.stopCh:
+		// The link is down. Writing straight to the socket here would bypass
+		// the queue and reorder the stream, so report instead.
+		return net.ErrClosed
+	case <-expired:
+		return os.ErrDeadlineExceeded
+	case c.writeCh <- req:
+		return nil
+	}
 }
 
 var _ net.Conn = (*Conn)(nil)
