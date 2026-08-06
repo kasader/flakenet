@@ -60,7 +60,7 @@ type PacketConn struct {
 	wire
 	stickyErr
 	headerSize    int
-	mss           int
+	mss           int // largest payload the link MTU admits
 	p             PacketProfile
 	writeCh       chan packetReq
 	writeDeadline atomic.Value
@@ -133,6 +133,11 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if c.isWriteDeadline() {
 		return 0, os.ErrDeadlineExceeded
 	}
+	// A datagram is all-or-nothing, so an oversized one never reaches the wire
+	// and must not consume link time.
+	if len(p) > c.mss {
+		return 0, ErrMessageTooLong
+	}
 	// Reserve the link first so concurrent datagrams queue behind one another
 	// instead of each paying the serialization delay independently.
 	finish := c.reserve(c.p.Bandwidth, len(p), c.headerSize)
@@ -144,6 +149,15 @@ func (c *PacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		due:  due,
 	}
 	copy(req.data, p)
+
+	// A select picks at random among ready cases, so a down link has to be
+	// checked on its own. Otherwise a write could still land in the queue while
+	// stopCh is closed, purely because the buffer had room.
+	select {
+	case <-c.stopCh:
+		return 0, net.ErrClosed
+	default:
+	}
 
 	expired, stop := deadlineTimer(c.writeDeadline.Load().(time.Time))
 	defer stop()

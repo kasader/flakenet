@@ -2,7 +2,6 @@ package policy
 
 import (
 	"math"
-	"math/rand/v2"
 	"sync/atomic"
 )
 
@@ -12,11 +11,12 @@ type LossFunc func() bool
 // Drop implements the [Loss] interface.
 func (f LossFunc) Drop() bool { return f() }
 
+// dropAt reports whether an event with probability rate (0.0 to 1.0) fires.
+func dropAt(r rng, rate float64) bool { return r.Float64() < rate }
+
 // RandomLoss returns a function that drops datagrams with probability rate (0.0 to 1.0).
 func RandomLoss(rate float64) LossFunc {
-	return LossFunc(func() bool {
-		return rand.Float64() < rate
-	})
+	return LossFunc(func() bool { return dropAt(global{}, rate) })
 }
 
 // LossVar is a thread-safe, mutable [Loss] provider.
@@ -35,6 +35,5 @@ func (v *LossVar) Set(rate float64) { v.val.Store(math.Float64bits(rate)) }
 
 // Drop implements the [Loss] interface.
 func (v *LossVar) Drop() bool {
-	rate := math.Float64frombits(v.val.Load())
-	return RandomLoss(rate)()
+	return dropAt(global{}, math.Float64frombits(v.val.Load()))
 }

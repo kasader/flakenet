@@ -1,9 +1,18 @@
 package flakenet
 
 import (
+	"errors"
 	"net"
 	"time"
 )
+
+// ErrMessageTooLong is returned by [PacketConn.WriteTo] for a datagram larger
+// than the link MTU allows, mirroring the EMSGSIZE a real socket returns.
+//
+// The datagram is rejected rather than fragmented. Modelling IP fragmentation,
+// where losing one fragment loses the whole datagram, would be the more
+// faithful emulation but is not what this does.
+var ErrMessageTooLong = errors.New("flakenet: message longer than link MTU")
 
 const (
 	// IPv4HeaderSize is the min size of an IPv4 header in bytes.

@@ -40,6 +40,25 @@ mid-transfer without reconnecting.
 - `Loss`: packet drops (`RandomLoss`)
 - `Fault`: trigger failures or closure on demand
 
+## Reproducibility
+
+The constructors above draw from the global generator, so a test that fails at
+1% loss can't be replayed. A `Source` draws every decision from one seeded
+stream instead:
+
+```go
+src := policy.NewSource(42)
+
+conn := flakenet.NewPacketConn(udpConn, flakenet.PacketProfile{
+    Jitter: src.RandomJitter(20 * time.Millisecond),
+    Loss:   src.RandomLoss(0.01),
+})
+```
+
+The same seed replays the same sequence of drops and delays across every policy
+the `Source` vends, so one seed reproduces the whole scenario. Delivery timing
+still follows the wall clock.
+
 ## Development
 
 Tooling comes from the Nix flake. `direnv allow` (or `nix develop`) gets you a
